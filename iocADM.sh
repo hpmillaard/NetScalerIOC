@@ -56,11 +56,6 @@ log_ioc() {
     echo "$MSG" >> "$LOGFILE"
 }
 
-log_info() {
-    echo "$(date '+%Y-%m-%d %H:%M:%S') - [INFO] $1" >> "$LOGFILE"
-}
-
-log_info "IOC scan started; effective cutoff: $CUTOFF_DATE"
 
 # ---- IOC TESTS 1–30 ----
 
@@ -382,6 +377,5 @@ grep -nE \
     log_ioc "[30] Suspicious persistence in rc.netscaler: $L"
 done
 
-log_info "IOC scan completed"
 
 exit 0
