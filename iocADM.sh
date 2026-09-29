@@ -1,0 +1,387 @@
+#!/usr/bin/bash
+# iocADM.sh - IOC scanner for NetScaler / NetScaler Console (production)
+# add audit messageaction IOC WARNING "\"[IOC]\""
+
+LOGFILE="/nsconfig/scripts/iocADM.log"
+
+# Optional incident-specific cutoff.
+# Empty ("") = use only the last firmware update + 30 minutes.
+# For a new incident, only this line needs to be changed.
+# The effective cutoff is always the LATEST of the firmware cutoff and this date.
+SPECIAL_CUTOFF_DATE="2026-09-01 00:00:00"
+
+# ---- build IOC tag without literal "[IOC]" in source ----
+IOC_START='['
+IOC_MID='IOC'
+IOC_END=']'
+IOC="${IOC_START}${IOC_MID}${IOC_END}"
+
+# ---- Step 1: determine cutoff date ----
+CUTOFF_TS=""
+CUTOFF_DATE=""
+NOW_TS=$(date "+%s")
+CURRENT_YEAR=$(date "+%Y")
+
+ADC_VER="/var/nsinstall/adc.version"
+if [ -f "$ADC_VER" ]; then
+    # adc.version exists -> use timestamp + 30 minutes
+    RAW_TS=$(ls -lT "$ADC_VER" 2>/dev/null | awk '{print $6" "$7" "$8" "$9}')
+    INSTALL_TS=$(date -j -f "%b %d %H:%M:%S %Y" "$RAW_TS" "+%s" 2>/dev/null || echo "")
+    if [ -n "$INSTALL_TS" ]; then
+        CUTOFF_TS=$((INSTALL_TS + 1800))
+        CUTOFF_DATE=$(date -j -r "$CUTOFF_TS" "+%Y-%m-%d %H:%M:%S" 2>/dev/null)
+    fi
+fi
+
+# ---- fallback to 30 days ago if adc.version does not exist or parsing fails ----
+if [ -z "$CUTOFF_DATE" ] || [ -z "$CUTOFF_TS" ]; then
+    CUTOFF_TS=$(date -v -30d "+%s" 2>/dev/null)
+    CUTOFF_DATE=$(date -r "$CUTOFF_TS" "+%Y-%m-%d %H:%M:%S" 2>/dev/null)
+fi
+
+# ---- optional incident cutoff ----
+# Never scan further back than necessary: the LATEST date wins.
+if [ -n "$SPECIAL_CUTOFF_DATE" ]; then
+    SPECIAL_CUTOFF_TS=$(date -j -f "%Y-%m-%d %H:%M:%S" "$SPECIAL_CUTOFF_DATE" "+%s" 2>/dev/null)
+    if [ -n "$SPECIAL_CUTOFF_TS" ] && [ "$SPECIAL_CUTOFF_TS" -gt "$CUTOFF_TS" ]; then
+        CUTOFF_TS="$SPECIAL_CUTOFF_TS"
+        CUTOFF_DATE="$SPECIAL_CUTOFF_DATE"
+    fi
+fi
+
+log_ioc() {
+    MSG="$1"
+    MSG="$(date '+%Y-%m-%d %H:%M:%S') - $MSG - Please forward to Harm Peter Millaard for further investigation!"
+    logger "$IOC - $MSG"
+    echo "$MSG" >> "$LOGFILE"
+}
+
+log_info() {
+    echo "$(date '+%Y-%m-%d %H:%M:%S') - [INFO] $1" >> "$LOGFILE"
+}
+
+log_info "IOC scan started; effective cutoff: $CUTOFF_DATE"
+
+# ---- IOC TESTS 1–30 ----
+
+# [1] PHP files in multiple paths
+for p in "/var/nsinstall" "/var/nsproflog" "/var/vpn" "/var/netscaler/logon" "/netscaler/portal"; do
+    find "$p" -type f -iname '*.php' 2>/dev/null | while read -r F; do
+        [ -z "$F" ] && continue
+        log_ioc "[1] PHP file found: $F"
+    done
+done
+
+# [2] PHP files excluding admin_ui
+for p in "/netscaler/ns_gui" "/netscaler/gui" "/var/netscaler"; do
+    find "$p" -type f -iname '*.php' -not -path '*/admin_ui/*' 2>/dev/null | while read -r F; do
+        [ -z "$F" ] && continue
+        log_ioc "[2] PHP file found (excluding admin_ui): $F"
+    done
+done
+
+# [3] modified files in /var/netscaler/logon/
+find /var/netscaler/logon/ -type f -newermt "$CUTOFF_DATE" \
+  ! -iname '*.png' ! -iname '*.jpg' ! -iname '*.jpeg' ! -iname '*.js' ! -iname '*.json' ! -iname '*.css' \
+  ! -iname '*.gif' ! -iname '*.ico' ! -iname '*.html' ! -iname '*.htm' ! -iname '*.xml' ! -iname '*.tar' \
+  ! -iname '*.pl' ! -iname '*.list' ! -iname '*.ttf' ! -iname '*.woff' ! -iname '*.woff2' ! -iname '*.eot' \
+  ! -iname '*.otf' ! -iname '*.svg' 2>/dev/null | while read -r F; do
+    [ -z "$F" ] && continue
+    log_ioc "[3] Modified file in /var/netscaler/logon: $F"
+done
+
+# [4] modified files in /var/python/ (max 10)
+COUNT=0
+find /var/python -newermt "$CUTOFF_DATE" -type f -exec ls -lT {} + 2>/dev/null | while read -r F; do
+    [ -z "$F" ] && continue
+    log_ioc "[4] Modified file in /var/python: $F"
+    COUNT=$((COUNT+1))
+    [ "$COUNT" -ge 10 ] && break
+done
+
+# [5] Graceful entries in httperror.log
+grep -H 'Graceful' /var/log/httperror.log 2>/dev/null | \
+grep -v ':00:' | \
+grep -v 'mpm_prefork:notice.*Graceful restart requested, doing restart' | \
+while read -r L; do
+    [ -z "$L" ] && continue
+    log_ioc "[5] Graceful log entry found: $L"
+done
+
+# [6] Graceful entries in gzipped httperror logs
+zgrep -h 'Graceful' /var/log/httperror.log.*.gz 2>/dev/null | \
+grep -v ':00:' | \
+grep -v 'mpm_prefork:notice.*Graceful restart requested, doing restart' | \
+while read -r L; do
+    [ -z "$L" ] && continue
+    log_ioc "[6] Graceful entry in gzipped log: $L"
+done
+
+# [7] NSPPE cores
+ls -al /var/core/NSPPE* 2>/dev/null | while read -r L; do
+    [ -z "$L" ] && continue
+    log_ioc "[7] NSPPE core found: $L"
+done
+
+# [8] .sh references in httperror.log*
+zgrep -h --line-number '\.sh' /var/log/httperror.log* 2>/dev/null | while read -r L; do
+    [ -z "$L" ] && continue
+    log_ioc "[8] Shell reference in httperror.log: $L"
+done
+
+# [9] .pl references
+zgrep -h --line-number '\.pl' /var/log/httperror.log* 2>/dev/null | while read -r L; do
+    [ -z "$L" ] && continue
+    log_ioc "[9] Perl reference in httperror.log: $L"
+done
+
+# [10] keywords in sh.log* with cutoff time
+zgrep -h -E 'database.php|/flash/nsconfig/keys|/ns_gui/vpn|LDAPTLS_REQCERT|ldapsearch|openssl' /var/log/sh.log* 2>/dev/null | while read -r L; do
+    [ -z "$L" ] && continue
+
+    LOG_DATE=$(echo "$L" | awk '{print $1" "$2" "$3}')
+    LOG_TS=$(date -j -f "%b %d %T %Y" "$LOG_DATE $CURRENT_YEAR" "+%s" 2>/dev/null)
+
+    if [ -n "$LOG_TS" ] && [ "$LOG_TS" -gt "$NOW_TS" ]; then
+        PREV_YEAR=$((CURRENT_YEAR - 1))
+        LOG_TS=$(date -j -f "%b %d %T %Y" "$LOG_DATE $PREV_YEAR" "+%s" 2>/dev/null)
+    fi
+
+    [ -z "$LOG_TS" ] && continue
+    [ "$LOG_TS" -le "$CUTOFF_TS" ] && continue
+    log_ioc "[10] Keyword sh.log: $L"
+done
+
+# [11] keywords in bash.log*
+for f in /var/log/bash.log /var/log/bash.log.*; do
+    [ -f "$f" ] || continue
+    case "$f" in
+        *.gz)
+            zgrep -h -E 'database.php|/flash/nsconfig/keys|/ns_gui/vpn|LDAPTLS_REQCERT|ldapsearch|openssl' "$f" 2>/dev/null
+            ;;
+        *)
+            grep -h -E 'database.php|/flash/nsconfig/keys|/ns_gui/vpn|LDAPTLS_REQCERT|ldapsearch|openssl' "$f" 2>/dev/null
+            ;;
+    esac | grep -v 'shell_command' | head -200 | while read -r L; do
+        [ -z "$L" ] && continue
+        log_ioc "[11] Keyword bash.log: $L"
+    done
+done
+
+# [12] processes running as nobody, excluding normal httpd workers
+ps auxww 2>/dev/null | awk '$1=="nobody" && $11!="/bin/httpd"{print $0}' | while read -r L; do
+    [ -z "$L" ] && continue
+    log_ioc "[12] Process nobody: $L"
+done
+
+# [13] filtered crontab entries
+grep -vE '^(#|SHELL=|PATH=|HOME=|^$)' /etc/crontab 2>/dev/null | \
+grep -vE 'newsyslog|nslog.sh|iprep|custom_snmpd|pgrep -f /netscaler/appfw_dynamic_profiles|curl http://localhost|do_logexport|aslearn_health_monitor|auto_update_signatures|/netscaler/adss-licexp.sh|purge_tickets.sh|adjkerntz -a|nsfsyncd|scriptA.sh|scriptB.sh|scriptC.sh|/var/python/bin/python /netscaler/appfw_dynamic_profiles/appfw_dynamic_profiles.py|/netscaler/ns_cleanup.sh' | \
+while read -r L; do
+    [ -z "$L" ] && continue
+    log_ioc "[13] Crontab entry: $L"
+done
+
+# [14] Python processes (filtered)
+ps auxww 2>/dev/null | grep python | grep -v grep | \
+grep -vF '/var/python/bin/python /var/python/bin/customsnmpd' | \
+grep -vF '/var/mastools/scripts/' | \
+grep -vF '/netscaler/do_logexport.py' | \
+grep -vF '/netscaler/appfw_dynamic_profiles/appfw_dynamic_profiles.py' | \
+while read -r L; do
+    [ -z "$L" ] && continue
+    log_ioc "[14] Python process: $L"
+done
+
+# [15] Perl processes
+ps auxww 2>/dev/null | grep perl | grep -v grep | while read -r L; do
+    [ -z "$L" ] && continue
+    echo "$L" | grep -qE "/usr/bin/perl +/netscaler/auto_update_signatures( |$)" && continue
+    log_ioc "[15] Perl process: $L"
+done
+
+# [16] suspicious commands in logs
+grep -v '127\.0\.0\.1' /var/log/*.log 2>/dev/null | \
+grep -E 'nc -l|/etc/passwd|python -c|\.php' | \
+grep -v 'iprep_curl_download' | \
+grep -v 'shell_command' | \
+grep -v '\[IOC\]' | \
+while read -r L; do
+    [ -z "$L" ] && continue
+    log_ioc "[16] Suspicious command in log: $L"
+done
+
+# [17] setuid root files in /var since cutoff
+find /var -perm -4000 -user root -not -path '/var/nslog/*' -newermt "$CUTOFF_DATE" 2>/dev/null | while read -r F; do
+    [ -z "$F" ] && continue
+    log_ioc "[17] Setuid root file: $F"
+done
+
+# [18] callhome_tmps files
+find /var/tmp -type f -iname 'callhome_tmps*' 2>/dev/null | while read -r F; do
+    [ -z "$F" ] && continue
+    log_ioc "[18] callhome_tmps file: $F"
+done
+
+# [19] unexpected SUID files
+find / -xdev -type f -perm -4000 -uid 0 2>/dev/null | while read -r F; do
+    [ -z "$F" ] && continue
+    case "$F" in
+        /netscaler/ping|/netscaler/ping6|/netscaler/traceroute|/netscaler/traceroute6|/sbin/mksnap_ffs|/sbin/shutdown|/sbin/poweroff|/usr/bin/crontab|/usr/bin/lock|/usr/bin/login|/usr/bin/passwd|/usr/bin/su|/usr/libexec/ssh-keysign)
+            :
+            ;;
+        *)
+            log_ioc "[19] Unexpected SUID file: $F"
+            ;;
+    esac
+done
+
+# [20] rc.netscaler backdoor / reverse-shell check
+grep -nE \
+'nc[[:space:]].*-l|\
+nc[[:space:]].*-e|\
+ncat[[:space:]].*-l|\
+ncat[[:space:]].*-e|\
+netcat[[:space:]].*-l|\
+netcat[[:space:]].*-e|\
+socat[[:space:]].*(EXEC:|SYSTEM:|TCP-LISTEN:)|\
+/dev/tcp/|\
+bash[[:space:]]+-i|\
+sh[[:space:]]+-i' \
+/nsconfig/rc.netscaler 2>/dev/null | while read -r L; do
+    [ -z "$L" ] && continue
+    log_ioc "[20] rc.netscaler backdoor check: $L"
+done
+
+# [21] ProxyPass rules
+grep -n "ProxyPass" /etc/httpd.conf 2>/dev/null | while read -r L; do
+    [ -z "$L" ] && continue
+    log_ioc "[21] ProxyPass rule: $L"
+done
+
+# [22] getAuthenticationRequirements modifications
+grep -R --line-number "getAuthenticationRequirements" /netscaler/portal/templates/ 2>/dev/null | \
+grep -v "expectedstring" | while read -r L; do
+    [ -z "$L" ] && continue
+    log_ioc "[22] getAuthenticationRequirements modification: $L"
+done
+
+# [23] suspicious headers in current and rotated httpaccess logs
+for f in /var/log/httpaccess.log /var/log/httpaccess.log.*; do
+    [ -f "$f" ] || continue
+    case "$f" in
+        *.gz) zgrep -h -E "X-Citrix-|X-Backdoor" "$f" 2>/dev/null ;;
+        *)    grep -h -E "X-Citrix-|X-Backdoor" "$f" 2>/dev/null ;;
+    esac | grep -v '127\.0\.0\.1' | while read -r L; do
+        [ -z "$L" ] && continue
+        log_ioc "[23] Suspicious header: $L"
+    done
+done
+
+# [24] suspicious user-agents in current and rotated httpaccess logs
+for f in /var/log/httpaccess.log /var/log/httpaccess.log.*; do
+    [ -f "$f" ] || continue
+    case "$f" in
+        *.gz) zgrep -h -E "curl|wget|sqlmap|nmap" "$f" 2>/dev/null ;;
+        *)    grep -h -E "curl|wget|sqlmap|nmap" "$f" 2>/dev/null ;;
+    esac | grep -v '127\.0\.0\.1' | while read -r L; do
+        [ -z "$L" ] && continue
+        log_ioc "[24] Suspicious user-agent: $L"
+    done
+done
+
+# [25] suspicious POST requests in current and rotated httpaccess logs
+for f in /var/log/httpaccess.log /var/log/httpaccess.log.*; do
+    [ -f "$f" ] || continue
+    case "$f" in
+        *.gz) zgrep -h "POST" "$f" 2>/dev/null ;;
+        *)    grep -h "POST" "$f" 2>/dev/null ;;
+    esac | grep -E "(/scripts/|/cgi-bin/|/vpn/\.\./)" | while read -r L; do
+        [ -z "$L" ] && continue
+        log_ioc "[25] Suspicious POST request: $L"
+    done
+done
+
+# [26] additional PHP checks
+for p in "/var/nsproflog" "/var/vpn" "/var/netscaler/logon"; do
+    find "$p" -type f -iname '*.php' 2>/dev/null | while read -r F; do
+        [ -z "$F" ] && continue
+        log_ioc "[26] Additional PHP file found: $F"
+    done
+done
+
+# [27] suspicious child processes started directly by httpd
+HTTPD_PIDS=$(ps -axo pid=,command= 2>/dev/null | awk '$2=="/bin/httpd"{print $1}')
+
+for PID in $HTTPD_PIDS; do
+    ps -axo user=,pid=,ppid=,command= 2>/dev/null | awk -v P="$PID" '
+        $3==P &&
+        (
+            $4=="/bin/sh" ||
+            $4=="/bin/bash" ||
+            $4=="/usr/bin/sh" ||
+            $4=="/usr/bin/bash" ||
+            $4=="/usr/bin/perl" ||
+            $4=="/usr/local/bin/perl" ||
+            $4=="/usr/bin/python" ||
+            $4=="/usr/local/bin/python" ||
+            $4=="/var/python/bin/python" ||
+            $4=="/usr/bin/curl" ||
+            $4=="/usr/local/bin/curl" ||
+            $4=="/usr/bin/wget" ||
+            $4=="/usr/local/bin/wget" ||
+            $4=="/bin/nc" ||
+            $4=="/usr/bin/nc" ||
+            $4=="/usr/local/bin/nc" ||
+            $4=="/usr/bin/ncat" ||
+            $4=="/usr/local/bin/ncat" ||
+            $4=="/usr/bin/socat" ||
+            $4=="/usr/local/bin/socat"
+        ) {
+            print $0
+        }
+    '
+done | while read -r L; do
+    [ -z "$L" ] && continue
+    log_ioc "[27] Suspicious child process of httpd: $L"
+done
+
+# [28] suspicious scripts/executables in writable temporary locations since cutoff
+for p in "/tmp" "/var/tmp" "/var/nstmp"; do
+    [ -d "$p" ] || continue
+    find "$p" -xdev -type f -newermt "$CUTOFF_DATE" 2>/dev/null | while read -r F; do
+        [ -z "$F" ] && continue
+        case "$F" in
+            /var/tmp/support/*|/var/tmp/nstrace/*|/var/tmp/.*) continue ;;
+        esac
+        case "$F" in
+            *.php|*.pl|*.py|*.sh|*.cgi)
+                log_ioc "[28] Script in temporary location since cutoff: $F"
+                continue
+                ;;
+        esac
+        [ -x "$F" ] && log_ioc "[28] Executable in temporary location since cutoff: $F"
+    done
+done
+
+# [29] suspicious listening processes: shell/interpreter/netcat-like tools
+if command -v sockstat >/dev/null 2>&1; then
+    sockstat -46 -l 2>/dev/null | \
+    grep -Ei '(^|[[:space:]])(sh|bash|perl|python|python[0-9.]*|nc|ncat|netcat|socat)([[:space:]]|$)' | \
+    while read -r L; do
+        [ -z "$L" ] && continue
+        log_ioc "[29] Suspicious listening process: $L"
+    done
+fi
+
+# [30] additional persistence check on rc.netscaler
+grep -nE \
+'nc[[:space:]].*(-l|-e)|ncat[[:space:]].*(-l|-e)|netcat[[:space:]].*(-l|-e)|socat[[:space:]].*(EXEC:|SYSTEM:|TCP-LISTEN:)|/dev/tcp/|bash[[:space:]]+-i|sh[[:space:]]+-i|curl[[:space:]]+https?://|wget[[:space:]]+https?://' \
+/nsconfig/rc.netscaler 2>/dev/null | while read -r L; do
+    [ -z "$L" ] && continue
+    log_ioc "[30] Suspicious persistence in rc.netscaler: $L"
+done
+
+log_info "IOC scan completed"
+
+exit 0
