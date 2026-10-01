@@ -4,7 +4,7 @@ A small incident-response toolkit for **Citrix NetScaler ADC / NetScaler Gateway
 
 The repository currently contains two shell scripts:
 
-- **`iocADM.sh`** — a reusable IOC scanner with 30 checks for suspicious files, processes, log entries, persistence mechanisms and runtime behavior.
+- **`iocADM.sh`** — a reusable IOC scanner with 38 checks for suspicious files, processes, log entries, persistence mechanisms and runtime behavior.
 - **`Collect-NetScalerEvidence.sh`** — an interactive evidence collector that preserves volatile state, logs, configuration and existing crash artifacts, and can optionally generate an NSPPE core dump.
 
 The scripts are intended for administrators who already understand NetScaler HA, shell access and the operational impact of restarting a Packet Engine. They are not a substitute for vendor support or a full forensic investigation.
@@ -72,6 +72,14 @@ The scanner currently checks for, among other things:
 - scripts/executables in writable temporary directories
 - suspicious listening shell/interpreter/netcat-like processes
 - additional persistence patterns in `rc.netscaler`
+- recently introduced XHTML files in NetScaler web roots
+- suspicious GUI package/signature artifacts
+- Apache PHP-handler or hardening changes
+- targeted encoded-payload and dropped-file patterns in web logs
+- pitboss-related log anomalies
+- suspicious Packet Engine open-file handles
+- attempts to remove core-file evidence
+- malformed authentication/protocol data that may indicate memory disclosure or overread
 
 A clean scan means **no indicators were found by these checks**. It does not prove that compromise never occurred.
 
