@@ -410,19 +410,21 @@ for CFG in /etc/httpd.conf /nsconfig/httpd.conf; do
     [ -f "$CFG" ] || continue
 
     awk '
-        BEGIN { IGNORECASE=1 }
-        /^[[:space:]]*#/ {
-            line=$0
+        {
+            raw=$0
+            line=tolower($0)
+        }
+        line ~ /^[[:space:]]*#/ {
             sub(/^[[:space:]]*#[[:space:]]*/, "", line)
-            if (line ~ /^Require[[:space:]]+all[[:space:]]+denied([[:space:]]|$)/ ||
+            if (line ~ /^require[[:space:]]+all[[:space:]]+denied([[:space:]]|$)/ ||
                 line ~ /^php_flag[[:space:]]+engine[[:space:]]+off([[:space:]]|$)/) {
-                print NR ":" $0
+                print NR ":" raw
             }
             next
         }
         {
-            if ($0 ~ /AddHandler[[:space:]]+application\/x-httpd-php([[:space:]]|$)/) {
-                print NR ":" $0
+            if (line ~ /addhandler[[:space:]]+application\/x-httpd-php([[:space:]]|$)/) {
+                print NR ":" raw
             }
         }
     ' "$CFG" 2>/dev/null | while read -r L; do
@@ -441,14 +443,16 @@ for f in /var/log/httpaccess.log /var/log/httpaccess.log.* /var/log/httperror.lo
     esac
 
     $READER "$f" 2>/dev/null | awk '
-        BEGIN { IGNORECASE=1 }
-        /nsginstaller\.deb/ ||
-        /nsgclient/ ||
-        /PD9waHAg/ ||
-        /PD9waHAK/ ||
-        /[0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]\.ico/ ||
-        /[0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]\/[^[:space:]]*\.sig/ {
-            print
+        {
+            low=tolower($0)
+            if (low ~ /nsginstaller\.deb/ ||
+                low ~ /nsgclient/ ||
+                $0 ~ /PD9waHAg/ ||
+                $0 ~ /PD9waHAK/ ||
+                low ~ /[0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]\.ico/ ||
+                low ~ /[0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]\/[^[:space:]]*\.sig/) {
+                print
+            }
         }
     ' | while read -r L; do
         [ -z "$L" ] && continue
@@ -466,8 +470,12 @@ for f in /var/log/ns.log /var/log/ns.log.*; do
     esac
 
     $READER "$f" 2>/dev/null | awk '
-        BEGIN { IGNORECASE=1 }
-        /pitboss/ && (/IFS/ || (/AAATM/ && /PPE/)) { print }
+        {
+            low=tolower($0)
+            if (low ~ /pitboss/ && (low ~ /ifs/ || (low ~ /aaatm/ && low ~ /ppe/))) {
+                print
+            }
+        }
     ' | while read -r L; do
         [ -z "$L" ] && continue
         log_ioc "[35] Suspicious pitboss-related log entry in $f: $L"
@@ -497,11 +505,13 @@ for f in /var/log/notice.log /var/log/notice.log.* /var/log/sh.log /var/log/sh.l
     esac
 
     $READER "$f" 2>/dev/null | awk '
-        BEGIN { IGNORECASE=1 }
-        /(^|[;&|[:space:]])rm([[:space:]]|$)/ &&
-        /\/var\/core/ &&
-        (/\*/ || /-[[:alnum:]]*r[[:alnum:]]*/) {
-            print
+        {
+            low=tolower($0)
+            if (low ~ /(^|[;&|[:space:]])rm([[:space:]]|$)/ &&
+                low ~ /\/var\/core/ &&
+                (low ~ /\*/ || low ~ /-[[:alnum:]]*r[[:alnum:]]*/)) {
+                print
+            }
         }
     ' | while read -r L; do
         [ -z "$L" ] && continue
