@@ -634,7 +634,7 @@ done
 for CFG in /etc/httpd.conf /nsconfig/httpd.conf /flash/nsconfig/httpd.conf; do
     [ -f "$CFG" ] || continue
     grep -Ei '^[[:space:]]*(AddHandler|AddType)[[:space:]]+application/x-httpd-php' "$CFG" 2>/dev/null | \
-    grep -oE '\.[A-Za-z0-9]+' | grep -Ev '^\.(php|phps)
+    grep -oE '\.[A-Za-z0-9]+' | grep -Ev '^\.(php|phps)$' | sort -u | while read -r EXT; do
         [ -z "$EXT" ] && continue
         for ROOT in /var/netscaler /netscaler/ns_gui /netscaler/portal /var/vpn; do
             [ -d "$ROOT" ] || continue
