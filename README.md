@@ -4,7 +4,7 @@ A small incident-response toolkit for **Citrix NetScaler ADC / NetScaler Gateway
 
 The repository currently contains two shell scripts:
 
-- **`iocADM.sh`** — a reusable IOC scanner with 38 checks for suspicious files, processes, log entries, persistence mechanisms and runtime behavior.
+- **`iocADM.sh`** — a reusable IOC scanner with 50 checks for suspicious files, processes, log entries, persistence mechanisms and runtime behavior.
 - **`Collect-NetScalerEvidence.sh`** — an interactive evidence collector that preserves volatile state, logs, configuration and existing crash artifacts, and can optionally generate an NSPPE core dump.
 
 The scripts are intended for administrators who already understand NetScaler HA, shell access and the operational impact of restarting a Packet Engine. They are not a substitute for vendor support or a full forensic investigation.
@@ -47,6 +47,14 @@ Findings are written to:
 
 IOC findings are also sent through `logger` with an `[IOC]` tag, making them suitable for forwarding through the appliance logging pipeline.
 
+Lower-confidence hunting results are written separately to:
+
+```text
+/nsconfig/scripts/iocADM-hunt.log
+```
+
+The hunt log is **never** sent through `logger` or syslog. This allows broad behavioral hunting without automatically creating SIEM/ServiceNow incidents for low-confidence signals.
+
 ### Current checks
 
 The scanner currently checks for, among other things:
@@ -80,6 +88,18 @@ The scanner currently checks for, among other things:
 - suspicious Packet Engine open-file handles
 - attempts to remove core-file evidence
 - malformed authentication/protocol data that may indicate memory disclosure or overread
+- known NetScaler web-shell command/control headers
+- SLAPSHOT `.uxdport` / `.uxdlock` artifacts and matching Python runtime
+- Base64 payload patterns in HTTP User-Agent / INDEX fields
+- unauthorized setuid shells
+- broader Apache PHP/Alias/Rewrite/SetEnvIf persistence
+- nonstandard file extensions configured for PHP execution
+- DTLS / Packet Engine crash indicators
+- known current-campaign web artifacts
+- obvious local log continuity anomalies
+- suspicious non-loopback sockets owned by interpreters/tunneling tools
+- suspicious restart/SUID/crontab manipulation commands
+- multi-signal web-shell behavior inside small web-accessible files
 
 A clean scan means **no indicators were found by these checks**. It does not prove that compromise never occurred.
 
@@ -87,9 +107,10 @@ A clean scan means **no indicators were found by these checks**. It does not pro
 
 `Collect-NetScalerEvidence.sh` is interactive when run normally.
 
-It first collects non-disruptive evidence and then asks:
+It first collects non-disruptive evidence. It then optionally generates a fresh NetScaler technical support bundle and finally asks whether an NSPPE core dump should be generated:
 
 ```text
+Generate a fresh NetScaler technical support bundle as well? [Y/n]:
 Generate an NSPPE core dump as well? This will trigger a warm restart. [y/N]:
 ```
 
@@ -118,21 +139,24 @@ The bundle includes, where available:
 - process listings and parent/child relationships
 - `top`, mount and filesystem information
 - interface, connection and routing state
-- `sockstat`
-- selected CPU/RAM/Packet Engine sysctls
+- `sockstat`, `lsof`, ARP state and network statistics
+- `dmesg`, logged-in user/session history and selected CPU/RAM/Packet Engine sysctls
+- `procstat` executable, command-line and open-file data for relevant runtime processes
 - `newnslog` time span and events
 - `adc.version`
 - `ns.conf` and previous configuration files
-- `rc.netscaler`
+- `rc.netscaler` from persistent locations
 - `/etc/crontab`
+- Apache/HTTPS configuration files from persistent and runtime locations
 - the IOC scanner and its log
 - the complete locally available `/var/log`
 - the complete locally available `/var/nslog`
 - `/var/core`
 - `/var/crash`
-- an existing `support.tgz`, if already present
+- a freshly generated `support.tgz` when the local NetScaler collector is available and the operator accepts the prompt
 - metadata for IOC-relevant filesystem locations
-- SHA-256 hashes of collected text/configuration/state files
+- SHA-256 hashes of IOC-relevant web files
+- a SHA-256 manifest covering all files in the final evidence bundle
 
 Private SSL keys are intentionally not copied.
 
@@ -157,3 +181,16 @@ This toolkit was built while responding to Citrix NetScaler security advisories 
 ## Disclaimer
 
 Use at your own risk. Test in your own environment before broad deployment. A negative result is not proof of absence of compromise, and a positive result should be validated before taking destructive remediation actions.
+
+
+## Public research basis
+
+Detection logic is independently implemented from publicly available defensive research and documentation, including:
+
+- Mandiant / Google Threat Intelligence Group research on active NetScaler exploitation, WHIPSHOT and SLAPSHOT
+- CERT-EU analysis of CVE-2026-88771 log-poisoning / Base64 User-Agent delivery
+- NCSC-NL public NetScaler live-host detection scripts
+- Unit 42 incident-response guidance for NetScaler zero-day exploitation
+- NetScaler public documentation for technical support bundle collection
+
+The scanner intentionally separates high-confidence IOC output from lower-confidence hunting output.
