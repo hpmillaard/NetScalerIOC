@@ -3,6 +3,7 @@
 # add audit messageaction IOC WARNING "\"[IOC]\""
 
 LOGFILE="/nsconfig/scripts/iocADM.log"
+HUNT_LOGFILE="/nsconfig/scripts/iocADM-hunt.log"
 
 # Optional incident-specific cutoff.
 # Empty ("") = use only the last firmware update + 30 minutes.
@@ -56,8 +57,13 @@ log_ioc() {
     echo "$MSG" >> "$LOGFILE"
 }
 
+# Lower-confidence hunting output. Never sent to logger/syslog.
+log_hunt() {
+    MSG="$1"
+    echo "$(date '+%Y-%m-%d %H:%M:%S') - [HUNT] $MSG" >> "$HUNT_LOGFILE"
+}
 
-# ---- IOC TESTS 1–38 ----
+# ---- IOC TESTS 1–50 ----
 
 # [1] PHP files in multiple paths
 for p in "/var/nsinstall" "/var/nsproflog" "/var/vpn" "/var/netscaler/logon" "/netscaler/portal"; do
@@ -89,7 +95,7 @@ done
 COUNT=0
 find /var/python -newermt "$CUTOFF_DATE" -type f -exec ls -lT {} + 2>/dev/null | while read -r F; do
     [ -z "$F" ] && continue
-    log_ioc "[4] Modified file in /var/python: $F"
+    log_hunt "[4] Modified file in /var/python: $F"
     COUNT=$((COUNT+1))
     [ "$COUNT" -ge 10 ] && break
 done
@@ -100,7 +106,7 @@ grep -v ':00:' | \
 grep -v 'mpm_prefork:notice.*Graceful restart requested, doing restart' | \
 while read -r L; do
     [ -z "$L" ] && continue
-    log_ioc "[5] Graceful log entry found: $L"
+    log_hunt "[5] Graceful log entry found: $L"
 done
 
 # [6] Graceful entries in gzipped httperror logs
@@ -109,25 +115,25 @@ grep -v ':00:' | \
 grep -v 'mpm_prefork:notice.*Graceful restart requested, doing restart' | \
 while read -r L; do
     [ -z "$L" ] && continue
-    log_ioc "[6] Graceful entry in gzipped log: $L"
+    log_hunt "[6] Graceful entry in gzipped log: $L"
 done
 
 # [7] NSPPE cores
 ls -al /var/core/NSPPE* 2>/dev/null | while read -r L; do
     [ -z "$L" ] && continue
-    log_ioc "[7] NSPPE core found: $L"
+    log_hunt "[7] NSPPE core found: $L"
 done
 
 # [8] .sh references in httperror.log*
 zgrep -h --line-number '\.sh' /var/log/httperror.log* 2>/dev/null | while read -r L; do
     [ -z "$L" ] && continue
-    log_ioc "[8] Shell reference in httperror.log: $L"
+    log_hunt "[8] Shell reference in httperror.log: $L"
 done
 
 # [9] .pl references
 zgrep -h --line-number '\.pl' /var/log/httperror.log* 2>/dev/null | while read -r L; do
     [ -z "$L" ] && continue
-    log_ioc "[9] Perl reference in httperror.log: $L"
+    log_hunt "[9] Perl reference in httperror.log: $L"
 done
 
 # [10] keywords in sh.log* with cutoff time
@@ -185,14 +191,14 @@ grep -vF '/netscaler/do_logexport.py' | \
 grep -vF '/netscaler/appfw_dynamic_profiles/appfw_dynamic_profiles.py' | \
 while read -r L; do
     [ -z "$L" ] && continue
-    log_ioc "[14] Python process: $L"
+    log_hunt "[14] Python process: $L"
 done
 
 # [15] Perl processes
 ps auxww 2>/dev/null | grep perl | grep -v grep | while read -r L; do
     [ -z "$L" ] && continue
     echo "$L" | grep -qE "/usr/bin/perl +/netscaler/auto_update_signatures( |$)" && continue
-    log_ioc "[15] Perl process: $L"
+    log_hunt "[15] Perl process: $L"
 done
 
 # [16] suspicious commands in logs
@@ -251,7 +257,7 @@ done
 # [21] ProxyPass rules
 grep -n "ProxyPass" /etc/httpd.conf 2>/dev/null | while read -r L; do
     [ -z "$L" ] && continue
-    log_ioc "[21] ProxyPass rule: $L"
+    log_hunt "[21] ProxyPass rule: $L"
 done
 
 # [22] getAuthenticationRequirements modifications
@@ -281,7 +287,7 @@ for f in /var/log/httpaccess.log /var/log/httpaccess.log.*; do
         *)    grep -h -E "curl|wget|sqlmap|nmap" "$f" 2>/dev/null ;;
     esac | grep -v '127\.0\.0\.1' | while read -r L; do
         [ -z "$L" ] && continue
-        log_ioc "[24] Suspicious user-agent: $L"
+        log_hunt "[24] Suspicious user-agent: $L"
     done
 done
 
@@ -351,11 +357,11 @@ for p in "/tmp" "/var/tmp" "/var/nstmp"; do
         esac
         case "$F" in
             *.php|*.pl|*.py|*.sh|*.cgi)
-                log_ioc "[28] Script in temporary location since cutoff: $F"
+                log_hunt "[28] Script in temporary location since cutoff: $F"
                 continue
                 ;;
         esac
-        [ -x "$F" ] && log_ioc "[28] Executable in temporary location since cutoff: $F"
+        [ -x "$F" ] && log_hunt "[28] Executable in temporary location since cutoff: $F"
     done
 done
 
@@ -365,7 +371,7 @@ if command -v sockstat >/dev/null 2>&1; then
     grep -Ei '(^|[[:space:]])(sh|bash|perl|python|python[0-9.]*|nc|ncat|netcat|socat)([[:space:]]|$)' | \
     while read -r L; do
         [ -z "$L" ] && continue
-        log_ioc "[29] Suspicious listening process: $L"
+        log_hunt "[29] Suspicious listening process: $L"
     done
 fi
 
@@ -386,7 +392,7 @@ for p in "/var/netscaler/logon" "/var/vpn" "/netscaler/ns_gui" "/var/netscaler/g
         case "$F" in
             */admin_ui/*) continue ;;
         esac
-        log_ioc "[31] XHTML file created or modified since cutoff: $F"
+        log_hunt "[31] XHTML file created or modified since cutoff: $F"
     done
 done
 
@@ -491,7 +497,7 @@ if command -v lsof >/dev/null 2>&1; then
         }
     ' | while read -r L; do
         [ -z "$L" ] && continue
-        log_ioc "[36] Packet Engine has suspicious file open: $L"
+        log_hunt "[36] Packet Engine has suspicious file open: $L"
     done
 fi
 
@@ -543,7 +549,7 @@ for f in /var/log/ns.log /var/log/ns.log.*; do
         }
     ' | while read -r L; do
         [ -z "$L" ] && continue
-        log_ioc "[38] Malformed authentication/protocol data in $f: $L"
+        log_hunt "[38] Malformed authentication/protocol data in $f: $L"
     done
 done
 
@@ -562,5 +568,174 @@ for CFG in /nsconfig/rc.netscaler /flash/nsconfig/rc.netscaler; do
     done
 done
 
+
+# [39] campaign-specific command/control header indicators in web logs
+for f in /var/log/httpaccess.log /var/log/httpaccess.log.* /var/log/httperror.log /var/log/httperror.log.*; do
+    [ -f "$f" ] || continue
+    case "$f" in
+        *.gz) READER="zcat" ;;
+        *)    READER="cat" ;;
+    esac
+    $READER "$f" 2>/dev/null | grep -Ei \
+    'HTTP_NSC_LDAP|HTTP_NSC_CLIENTTYPE|HTTP_X_UX(_[0-9]+)?|NSC_LDAP|NSC_CLIENTTYPE|X_UX_[0-9]+' | \
+    while read -r L; do
+        [ -z "$L" ] && continue
+        log_ioc "[39] NetScaler web-shell C2 header indicator in $f: $L"
+    done
+done
+
+# [40] SLAPSHOT IPC artifacts and matching Python runtime
+for F in /tmp/.uxdport /tmp/.uxdport.* /tmp/.uxdlock /tmp/.uxdlock.*; do
+    [ -e "$F" ] || continue
+    log_ioc "[40] SLAPSHOT IPC artifact found: $F"
+done
+
+ps auxww 2>/dev/null | grep -Ei 'python.*(\.uxdport|\.uxdlock|base64.*exec|exec.*base64)' | grep -v grep | while read -r L; do
+    [ -z "$L" ] && continue
+    log_ioc "[40] Suspicious Python proxy/loader process: $L"
+done
+
+# [41] Base64 exploit payloads staged in HTTP User-Agent / INDEX fields
+for f in /var/log/httpaccess.log /var/log/httpaccess.log.*; do
+    [ -f "$f" ] || continue
+    case "$f" in
+        *.gz) READER="zcat" ;;
+        *)    READER="cat" ;;
+    esac
+    $READER "$f" 2>/dev/null | grep -E \
+    'INDEX:[A-Za-z0-9+/]{20,}={0,2}|User-Agent:.*[A-Za-z0-9+/]{40,}={0,2}' | \
+    while read -r L; do
+        [ -z "$L" ] && continue
+        log_ioc "[41] Base64 payload pattern in HTTP log $f: $L"
+    done
+done
+
+# [42] unauthorized setuid shell persistence
+for F in /bin/sh /var/tmp/sh; do
+    [ -e "$F" ] || continue
+    if [ -u "$F" ]; then
+        DETAILS=$(ls -lT "$F" 2>/dev/null)
+        log_ioc "[42] Setuid shell detected: $DETAILS"
+    fi
+done
+
+# [43] broader Apache execution/persistence mappings
+for CFG in /etc/httpd.conf /nsconfig/httpd.conf /flash/nsconfig/httpd.conf /nsconfig/https.conf; do
+    [ -f "$CFG" ] || continue
+    grep -nEi \
+    '^[[:space:]]*(AddHandler|AddType)[[:space:]]+application/x-httpd-php|^[[:space:]]*php_flag[[:space:]]+engine[[:space:]]+on|^[[:space:]]*(Alias|AliasMatch|RewriteRule)[[:space:]].*(/vpn/(media|theme|themes|images|scripts)|/netscaler/ns_gui)|^[[:space:]]*SetEnvIf[[:space:]].*(NSC_|X_UX)' \
+    "$CFG" 2>/dev/null | while read -r L; do
+        [ -z "$L" ] && continue
+        log_ioc "[43] Suspicious Apache execution/persistence mapping in $CFG: $L"
+    done
+done
+
+# [44] non-PHP extensions configured for PHP execution with matching web files
+for CFG in /etc/httpd.conf /nsconfig/httpd.conf /flash/nsconfig/httpd.conf; do
+    [ -f "$CFG" ] || continue
+    grep -Ei '^[[:space:]]*(AddHandler|AddType)[[:space:]]+application/x-httpd-php' "$CFG" 2>/dev/null | \
+    grep -oE '\.[A-Za-z0-9]+' | grep -Ev '^\.(php|phps) | sort -u | while read -r EXT; do
+        [ -z "$EXT" ] && continue
+        for ROOT in /var/netscaler /netscaler/ns_gui /netscaler/portal /var/vpn; do
+            [ -d "$ROOT" ] || continue
+            find "$ROOT" -type f -iname "*$EXT" 2>/dev/null | while read -r F; do
+                [ -z "$F" ] && continue
+                log_ioc "[44] File uses nonstandard PHP-enabled extension $EXT: $F"
+            done
+        done
+    done
+done
+
+# [45] DTLS / Packet Engine crash indicators (local hunting only)
+for f in /var/log/ns.log /var/log/ns.log.* /var/log/messages /var/log/messages.*; do
+    [ -f "$f" ] || continue
+    case "$f" in
+        *.gz) READER="zcat" ;;
+        *)    READER="cat" ;;
+    esac
+    $READER "$f" 2>/dev/null | grep -Ei 'SSL_HANDSHAKE_FAILURE.*DTLS|DTLS.*SSL_HANDSHAKE_FAILURE' | head -5 | while read -r L; do
+        [ -z "$L" ] && continue
+        log_hunt "[45] DTLS handshake failure in $f: $L"
+    done
+    $READER "$f" 2>/dev/null | grep -Ei 'NSPPE.*(terminated|abort|crash)|pitboss.*NOT restarting NSPPE|PPE NSPPE missed too many heartbeats' | head -10 | while read -r L; do
+        [ -z "$L" ] && continue
+        log_hunt "[45] Packet Engine failure/restart indicator in $f: $L"
+    done
+done
+
+# [46] known current-campaign web artifacts
+for ROOT in /netscaler/ns_gui /var/netscaler /var/vpn /netscaler/portal; do
+    [ -d "$ROOT" ] || continue
+    find "$ROOT" -type f \( \
+        -iname '.ctxs.receiver' -o \
+        -iname 'receiver.min*.css' -o \
+        -iname 'insight-new.js' -o \
+        -iname 'nsginstaller*.deb' -o \
+        -iname 'nsgclient*.deb' -o \
+        -iname 'nsgclient*.sig' \
+    \) 2>/dev/null | while read -r F; do
+        [ -z "$F" ] && continue
+        log_ioc "[46] Known campaign artifact found: $F"
+    done
+done
+
+# [47] obvious local logging anomalies (local hunting only)
+for F in /var/log/httpaccess.log /var/log/httperror.log /var/log/ns.log; do
+    if [ ! -e "$F" ]; then
+        log_hunt "[47] Expected current log file is missing: $F"
+        continue
+    fi
+    SIZE=$(wc -c < "$F" 2>/dev/null | tr -d ' ')
+    [ -n "$SIZE" ] && [ "$SIZE" -eq 0 ] && log_hunt "[47] Expected current log file is empty: $F"
+done
+
+# [48] non-loopback sockets owned by interpreters/tunneling tools (local hunting only)
+if command -v sockstat >/dev/null 2>&1; then
+    sockstat -46 2>/dev/null | \
+    grep -Ei '(^|[[:space:]])(python|python[0-9.]*|perl|sh|bash|nc|ncat|netcat|socat)([[:space:]]|$)' | \
+    grep -Ev '127\.0\.0\.1[: ]|::1[: ]' | \
+    while read -r L; do
+        [ -z "$L" ] && continue
+        log_hunt "[48] Interpreter/tunneling process has non-loopback socket: $L"
+    done
+fi
+
+# [49] execution/persistence commands in shell and notice logs
+for f in /var/log/sh.log /var/log/sh.log.* /var/log/bash.log /var/log/bash.log.* /var/log/notice.log /var/log/notice.log.*; do
+    [ -f "$f" ] || continue
+    case "$f" in
+        *.gz) READER="zcat" ;;
+        *)    READER="cat" ;;
+    esac
+    $READER "$f" 2>/dev/null | grep -Ei \
+    'chmod[[:space:]]+u\+s[[:space:]]+/bin/sh|/bin/httpd[[:space:]]+-k[[:space:]]+restart|nsshutdown[[:space:]]+-R|(/etc/crontab|/nsconfig/rc\.netscaler).*(sed|perl|rm)|python.*base64.*exec' | \
+    while read -r L; do
+        [ -z "$L" ] && continue
+        log_ioc "[49] Suspicious persistence/execution command in $f: $L"
+    done
+done
+
+# [50] multi-signal web-shell behavior in small web-accessible files
+for ROOT in /netscaler/ns_gui /var/netscaler/logon /var/netscaler/gui /netscaler/portal /var/vpn; do
+    [ -d "$ROOT" ] || continue
+    find "$ROOT" -type f \( \
+        -iname '*.php' -o -iname '*.sig' -o -iname '*.deb' -o -iname '*.css' -o \
+        -iname '*.ico' -o -iname '*.js' -o -iname '*.xhtml' -o -iname '*.html' \
+    \) 2>/dev/null | while read -r F; do
+        [ -f "$F" ] || continue
+        SIZE=$(wc -c < "$F" 2>/dev/null | tr -d ' ')
+        [ -z "$SIZE" ] && continue
+        [ "$SIZE" -gt 262144 ] && continue
+
+        MATCHES=$(grep -Eio \
+        'HTTP_NSC_LDAP|HTTP_NSC_CLIENTTYPE|HTTP_X_UX(_[0-9]+)?|base64_decode[[:space:]]*\(|shell_exec[[:space:]]*\(|fsockopen[[:space:]]*\(|/tmp/\.uxd(port|lock)|http_response_code[[:space:]]*\([[:space:]]*404[[:space:]]*\)|chmod[[:space:]]+u\+s[[:space:]]+/bin/sh' \
+        "$F" 2>/dev/null | sort -u | head -10)
+
+        COUNT=$(printf '%s\n' "$MATCHES" | grep -c . 2>/dev/null)
+        if [ -n "$COUNT" ] && [ "$COUNT" -ge 2 ]; then
+            log_ioc "[50] Multiple web-shell behavior markers in $F: $(printf '%s' "$MATCHES" | tr '\n' ' ')"
+        fi
+    done
+done
 
 exit 0
