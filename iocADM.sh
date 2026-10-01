@@ -57,7 +57,7 @@ log_ioc() {
 }
 
 
-# ---- IOC TESTS 1–30 ----
+# ---- IOC TESTS 1–38 ----
 
 # [1] PHP files in multiple paths
 for p in "/var/nsinstall" "/var/nsproflog" "/var/vpn" "/var/netscaler/logon" "/netscaler/portal"; do
@@ -347,7 +347,7 @@ for p in "/tmp" "/var/tmp" "/var/nstmp"; do
     find "$p" -xdev -type f -newermt "$CUTOFF_DATE" 2>/dev/null | while read -r F; do
         [ -z "$F" ] && continue
         case "$F" in
-            /var/tmp/support/*|/var/tmp/nstrace/*|/var/tmp/.*) continue ;;
+            /var/tmp/ns_system_backup.pl|/var/tmp/support/*|/var/tmp/nstrace/*|/var/tmp/.*) continue ;;
         esac
         case "$F" in
             *.php|*.pl|*.py|*.sh|*.cgi)
@@ -375,6 +375,181 @@ grep -nE \
 /nsconfig/rc.netscaler 2>/dev/null | while read -r L; do
     [ -z "$L" ] && continue
     log_ioc "[30] Suspicious persistence in rc.netscaler: $L"
+done
+
+
+# [31] recently introduced XHTML files in NetScaler web roots
+for p in "/var/netscaler/logon" "/var/vpn" "/netscaler/ns_gui" "/var/netscaler/gui" "/netscaler/portal"; do
+    [ -d "$p" ] || continue
+    find "$p" -type f -iname '*.xhtml' -newermt "$CUTOFF_DATE" 2>/dev/null | while read -r F; do
+        [ -z "$F" ] && continue
+        case "$F" in
+            */admin_ui/*) continue ;;
+        esac
+        log_ioc "[31] XHTML file created or modified since cutoff: $F"
+    done
+done
+
+# [32] suspicious NetScaler GUI package/signature artifacts
+for p in "/var/netscaler/gui" "/netscaler/ns_gui"; do
+    [ -d "$p" ] || continue
+
+    find "$p" -type f \( -iname 'nsginstaller.deb' -o -iname 'nsgclient18.deb' \) 2>/dev/null | while read -r F; do
+        [ -z "$F" ] && continue
+        log_ioc "[32] Suspicious GUI package artifact: $F"
+    done
+
+    find "$p" -type f -iname '*.sig' -newermt "$CUTOFF_DATE" 2>/dev/null | while read -r F; do
+        [ -z "$F" ] && continue
+        log_ioc "[32] Recently modified GUI signature file: $F"
+    done
+done
+
+# [33] Apache configuration tampering related to PHP execution or disabled hardening
+for CFG in /etc/httpd.conf /nsconfig/httpd.conf; do
+    [ -f "$CFG" ] || continue
+
+    awk '
+        BEGIN { IGNORECASE=1 }
+        /^[[:space:]]*#/ {
+            line=$0
+            sub(/^[[:space:]]*#[[:space:]]*/, "", line)
+            if (line ~ /^Require[[:space:]]+all[[:space:]]+denied([[:space:]]|$)/ ||
+                line ~ /^php_flag[[:space:]]+engine[[:space:]]+off([[:space:]]|$)/) {
+                print NR ":" $0
+            }
+            next
+        }
+        {
+            if ($0 ~ /AddHandler[[:space:]]+application\/x-httpd-php([[:space:]]|$)/) {
+                print NR ":" $0
+            }
+        }
+    ' "$CFG" 2>/dev/null | while read -r L; do
+        [ -z "$L" ] && continue
+        log_ioc "[33] Suspicious Apache configuration in $CFG: $L"
+    done
+done
+
+# [34] targeted web-log artifacts associated with dropped payloads or encoded PHP
+for f in /var/log/httpaccess.log /var/log/httpaccess.log.* /var/log/httperror.log /var/log/httperror.log.*; do
+    [ -f "$f" ] || continue
+
+    case "$f" in
+        *.gz) READER="zcat" ;;
+        *)    READER="cat" ;;
+    esac
+
+    $READER "$f" 2>/dev/null | awk '
+        BEGIN { IGNORECASE=1 }
+        /nsginstaller\.deb/ ||
+        /nsgclient/ ||
+        /PD9waHAg/ ||
+        /PD9waHAK/ ||
+        /[0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]\.ico/ ||
+        /[0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]\/[^[:space:]]*\.sig/ {
+            print
+        }
+    ' | while read -r L; do
+        [ -z "$L" ] && continue
+        log_ioc "[34] Targeted web-log artifact in $f: $L"
+    done
+done
+
+# [35] suspicious pitboss-related activity in NetScaler logs
+for f in /var/log/ns.log /var/log/ns.log.*; do
+    [ -f "$f" ] || continue
+
+    case "$f" in
+        *.gz) READER="zcat" ;;
+        *)    READER="cat" ;;
+    esac
+
+    $READER "$f" 2>/dev/null | awk '
+        BEGIN { IGNORECASE=1 }
+        /pitboss/ && (/IFS/ || (/AAATM/ && /PPE/)) { print }
+    ' | while read -r L; do
+        [ -z "$L" ] && continue
+        log_ioc "[35] Suspicious pitboss-related log entry in $f: $L"
+    done
+done
+
+# [36] unexpected files opened by Packet Engine processes
+if command -v lsof >/dev/null 2>&1; then
+    lsof -VRPn 2>/dev/null | awk '
+        /NSPPE/ &&
+        ($0 ~ /\/var\/netscaler\// || tolower($0) ~ /callhome/) {
+            print
+        }
+    ' | while read -r L; do
+        [ -z "$L" ] && continue
+        log_ioc "[36] Packet Engine has suspicious file open: $L"
+    done
+fi
+
+# [37] evidence-removal attempts targeting core files
+for f in /var/log/notice.log /var/log/notice.log.* /var/log/sh.log /var/log/sh.log.* /var/log/bash.log /var/log/bash.log.*; do
+    [ -f "$f" ] || continue
+
+    case "$f" in
+        *.gz) READER="zcat" ;;
+        *)    READER="cat" ;;
+    esac
+
+    $READER "$f" 2>/dev/null | awk '
+        BEGIN { IGNORECASE=1 }
+        /(^|[;&|[:space:]])rm([[:space:]]|$)/ &&
+        /\/var\/core/ &&
+        (/\*/ || /-[[:alnum:]]*r[[:alnum:]]*/) {
+            print
+        }
+    ' | while read -r L; do
+        [ -z "$L" ] && continue
+        log_ioc "[37] Possible core-file evidence removal in $f: $L"
+    done
+done
+
+# [38] malformed authentication/protocol log data suggesting memory disclosure/overread
+# This intentionally uses generalized byte/content anomaly detection rather than exploit-specific signatures.
+for f in /var/log/ns.log /var/log/ns.log.*; do
+    [ -f "$f" ] || continue
+
+    case "$f" in
+        *.gz) READER="zcat" ;;
+        *)    READER="cat" ;;
+    esac
+
+    $READER "$f" 2>/dev/null | perl -ne '
+        next unless /(?:WSFed:\s*request_id|acs=)/i;
+
+        $line = $_;
+        $non_ascii = ($line =~ /[^\x09\x0a\x0d\x20-\x7e]/);
+
+        $caret_count = () = ($line =~ /\^/g);
+        $odd_delimiters = (/WSFed:\s*request_id/i && $caret_count >= 2);
+
+        if ($non_ascii || $odd_delimiters) {
+            print $_;
+        }
+    ' | while read -r L; do
+        [ -z "$L" ] && continue
+        log_ioc "[38] Malformed authentication/protocol data in $f: $L"
+    done
+done
+
+# Extend the SUID search to flash storage for incident-era changes.
+find /flash -type f -user root -newermt "$CUTOFF_DATE" \( -perm -4001 -o -perm -4010 \) 2>/dev/null | while read -r F; do
+    [ -z "$F" ] && continue
+    log_ioc "[17] Setuid root file in /flash since cutoff: $F"
+done
+
+# Extend persistence detection with interpreter execution from rc.netscaler.
+for CFG in /nsconfig/rc.netscaler /flash/nsconfig/rc.netscaler; do
+    [ -f "$CFG" ] || continue
+    grep -nEi '(^|[;&|[:space:]])(python|python[0-9.]*)([[:space:]]|$)' "$CFG" 2>/dev/null | while read -r L; do
+        [ -z "$L" ] && continue
+        log_ioc "[30] Python persistence in $CFG: $L"
+    done
 done
 
 
