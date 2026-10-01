@@ -1,0 +1,2 @@
+# Keep Unix shell scripts Unix-native regardless of developer workstation settings.
+*.sh text eol=lf
