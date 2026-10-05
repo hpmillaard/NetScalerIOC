@@ -115,11 +115,16 @@ find /var/netscaler/logon/ -type f -newermt "$CUTOFF_DATE" \
     log_ioc "[3] Modified file in /var/netscaler/logon: $F"
 done
 
-# [4] modified files in /var/python/ (max 10)
+# [4] modified files in /var/python/ (local hunting only, max 10)
+# Ignore interpreter bytecode/cache churn; retain real source/executable changes.
 COUNT=0
-find /var/python -newermt "$CUTOFF_DATE" -type f -exec ls -lT {} + 2>/dev/null | while read -r F; do
+find /var/python -newermt "$CUTOFF_DATE" -type f 2>/dev/null | \
+grep -Ev '/__pycache__/|\.pyc$|\.pyo$' | \
+while read -r F; do
     [ -z "$F" ] && continue
-    log_hunt "[4] Modified file in /var/python: $F"
+    DETAILS=$(ls -lT "$F" 2>/dev/null)
+    [ -z "$DETAILS" ] && DETAILS="$F"
+    log_hunt "[4] Modified file in /var/python: $DETAILS"
     COUNT=$((COUNT+1))
     [ "$COUNT" -ge 10 ] && break
 done
@@ -213,6 +218,7 @@ grep -vF '/var/python/bin/python /var/python/bin/customsnmpd' | \
 grep -vF '/var/mastools/scripts/' | \
 grep -vF '/netscaler/do_logexport.py' | \
 grep -vF '/netscaler/appfw_dynamic_profiles/appfw_dynamic_profiles.py' | \
+grep -vE '/var/python/bin/python([0-9.]*)?[[:space:]]+-m[[:space:]]+pip[[:space:]]+install[[:space:]]+--no-deps[[:space:]]+/var/nextgen/infra/packages/' | \
 while read -r L; do
     [ -z "$L" ] && continue
     log_hunt "[14] Python process: $L"
@@ -230,7 +236,7 @@ grep -v '127\.0\.0\.1' /var/log/*.log 2>/dev/null | \
 grep -E 'nc -l|/etc/passwd|python -c|\.php' | \
 grep -v 'iprep_curl_download' | \
 grep -v 'shell_command' | \
-grep -v '/nsconfig/scripts/ioc\.sh' | \
+grep -Ev '/nsconfig/scripts/(ioc|iocADM)\.sh' | \
 grep -v '\[IOC\]' | \
 while read -r L; do
     [ -z "$L" ] && continue
@@ -378,7 +384,15 @@ for p in "/tmp" "/var/tmp" "/var/nstmp"; do
     find "$p" -xdev -type f -newermt "$CUTOFF_DATE" 2>/dev/null | while read -r F; do
         [ -z "$F" ] && continue
         case "$F" in
-            /var/tmp/ns_system_backup.pl|/var/tmp/support/*|/var/tmp/nstrace/*|/var/tmp/.*) continue ;;
+            /var/tmp/ns_system_backup.pl|\
+            /var/tmp/support/*|\
+            /var/tmp/nstrace/*|\
+            /var/tmp/Mellanox/*|\
+            /var/tmp/Fortville_Silicom_Intel/*|\
+            /var/tmp/par-*/cache-*/*|\
+            /var/tmp/.*)
+                continue
+                ;;
         esac
         case "$F" in
             *.php|*.pl|*.py|*.sh|*.cgi)
