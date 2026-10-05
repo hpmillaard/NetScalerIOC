@@ -369,6 +369,7 @@ done
 if command -v sockstat >/dev/null 2>&1; then
     sockstat -46 -l 2>/dev/null | \
     grep -Ei '(^|[[:space:]])(sh|bash|perl|python|python[0-9.]*|nc|ncat|netcat|socat)([[:space:]]|$)' | \
+    grep -Ev '127\.0\.0\.1[: ]|::1[: ]' | \
     while read -r L; do
         [ -z "$L" ] && continue
         log_hunt "[29] Suspicious listening process: $L"
@@ -619,11 +620,11 @@ for F in /bin/sh /var/tmp/sh; do
     fi
 done
 
-# [43] broader Apache execution/persistence mappings
+# [43] Apache execution/persistence mappings that should not exist in a stock configuration
 for CFG in /etc/httpd.conf /nsconfig/httpd.conf /flash/nsconfig/httpd.conf /nsconfig/https.conf; do
     [ -f "$CFG" ] || continue
     grep -nEi \
-    '^[[:space:]]*(AddHandler|AddType)[[:space:]]+application/x-httpd-php|^[[:space:]]*php_flag[[:space:]]+engine[[:space:]]+on|^[[:space:]]*(Alias|AliasMatch|RewriteRule)[[:space:]].*(/vpn/(media|theme|themes|images|scripts)|/netscaler/ns_gui)|^[[:space:]]*SetEnvIf[[:space:]].*(NSC_|X_UX)' \
+    '^[[:space:]]*php_flag[[:space:]]+engine[[:space:]]+on|^[[:space:]]*(Alias|AliasMatch|RewriteRule)[[:space:]].*(/tmp/|/var/tmp/|/var/nstmp/)|^[[:space:]]*SetEnvIf[[:space:]].*(X_UX|HTTP_X_UX)' \
     "$CFG" 2>/dev/null | while read -r L; do
         [ -z "$L" ] && continue
         log_ioc "[43] Suspicious Apache execution/persistence mapping in $CFG: $L"
@@ -663,10 +664,10 @@ for f in /var/log/ns.log /var/log/ns.log.* /var/log/messages /var/log/messages.*
     done
 done
 
-# [46] known current-campaign web artifacts
+# [46] recently introduced campaign-like web artifacts (local hunting only)
 for ROOT in /netscaler/ns_gui /var/netscaler /var/vpn /netscaler/portal; do
     [ -d "$ROOT" ] || continue
-    find "$ROOT" -type f \( \
+    find "$ROOT" -type f -newermt "$CUTOFF_DATE" \( \
         -iname '.ctxs.receiver' -o \
         -iname 'receiver.min*.css' -o \
         -iname 'insight-new.js' -o \
@@ -675,7 +676,14 @@ for ROOT in /netscaler/ns_gui /var/netscaler /var/vpn /netscaler/portal; do
         -iname 'nsgclient*.sig' \
     \) 2>/dev/null | while read -r F; do
         [ -z "$F" ] && continue
-        log_ioc "[46] Known campaign artifact found: $F"
+        case "$F" in
+            /var/netscaler/gui/vpn/scripts/linux/nsginstaller*.deb|\
+            /var/netscaler/gui/vpn/scripts/linux/nsgclient*.deb|\
+            /var/netscaler/gui/vpn/scripts/linux/nsgclient*.sig)
+                continue
+                ;;
+        esac
+        log_hunt "[46] Recently introduced campaign-like web artifact: $F"
     done
 done
 
@@ -707,116 +715,21 @@ for f in /var/log/sh.log /var/log/sh.log.* /var/log/bash.log /var/log/bash.log.*
         *.gz) READER="zcat" ;;
         *)    READER="cat" ;;
     esac
-    $READER "$f" 2>/dev/null | grep -Ei \
-    'chmod[[:space:]]+u\+s[[:space:]]+/bin/sh|/bin/httpd[[:space:]]+-k[[:space:]]+restart|nsshutdown[[:space:]]+-R|(/etc/crontab|/nsconfig/rc\.netscaler).*(sed|perl|rm)|python.*base64.*exec' | \
+
+    # Never alert on this scanner's own shell-command logging or known NetScaler custom-SNMP maintenance.
+    $READER "$f" 2>/dev/null | \
+    grep -Ev 'iocADM|log_ioc|log_hunt|custom_snmpd\.py|customsnmpd|ctrap\.sh' | \
     while read -r L; do
         [ -z "$L" ] && continue
-        log_ioc "[49] Suspicious persistence/execution command in $f: $L"
-    done
-done
 
-# [50] multi-signal web-shell behavior in small web-accessible files
-for ROOT in /netscaler/ns_gui /var/netscaler/logon /var/netscaler/gui /netscaler/portal /var/vpn; do
-    [ -d "$ROOT" ] || continue
-    find "$ROOT" -type f \( \
-        -iname '*.php' -o -iname '*.sig' -o -iname '*.deb' -o -iname '*.css' -o \
-        -iname '*.ico' -o -iname '*.js' -o -iname '*.xhtml' -o -iname '*.html' \
-    \) 2>/dev/null | while read -r F; do
-        [ -f "$F" ] || continue
-        SIZE=$(wc -c < "$F" 2>/dev/null | tr -d ' ')
-        [ -z "$SIZE" ] && continue
-        [ "$SIZE" -gt 262144 ] && continue
-
-        MATCHES=$(grep -Eio \
-        'HTTP_NSC_LDAP|HTTP_NSC_CLIENTTYPE|HTTP_X_UX(_[0-9]+)?|base64_decode[[:space:]]*\(|shell_exec[[:space:]]*\(|fsockopen[[:space:]]*\(|/tmp/\.uxd(port|lock)|http_response_code[[:space:]]*\([[:space:]]*404[[:space:]]*\)|chmod[[:space:]]+u\+s[[:space:]]+/bin/sh' \
-        "$F" 2>/dev/null | sort -u | head -10)
-
-        COUNT=$(printf '%s\n' "$MATCHES" | grep -c . 2>/dev/null)
-        if [ -n "$COUNT" ] && [ "$COUNT" -ge 2 ]; then
-            log_ioc "[50] Multiple web-shell behavior markers in $F: $(printf '%s' "$MATCHES" | tr '\n' ' ')"
+        if echo "$L" | grep -Eqi 'chmod[[:space:]]+u\+s[[:space:]]+/bin/sh|python.*base64.*exec'; then
+            log_ioc "[49] High-confidence persistence/execution command in $f: $L"
+            continue
         fi
-    done
-done
 
-exit 0
- | sort -u | while read -r EXT; do
-        [ -z "$EXT" ] && continue
-        for ROOT in /var/netscaler /netscaler/ns_gui /netscaler/portal /var/vpn; do
-            [ -d "$ROOT" ] || continue
-            find "$ROOT" -type f -iname "*$EXT" 2>/dev/null | while read -r F; do
-                [ -z "$F" ] && continue
-                log_ioc "[44] File uses nonstandard PHP-enabled extension $EXT: $F"
-            done
-        done
-    done
-done
-
-# [45] DTLS / Packet Engine crash indicators (local hunting only)
-for f in /var/log/ns.log /var/log/ns.log.* /var/log/messages /var/log/messages.*; do
-    [ -f "$f" ] || continue
-    case "$f" in
-        *.gz) READER="zcat" ;;
-        *)    READER="cat" ;;
-    esac
-    $READER "$f" 2>/dev/null | grep -Ei 'SSL_HANDSHAKE_FAILURE.*DTLS|DTLS.*SSL_HANDSHAKE_FAILURE' | head -5 | while read -r L; do
-        [ -z "$L" ] && continue
-        log_hunt "[45] DTLS handshake failure in $f: $L"
-    done
-    $READER "$f" 2>/dev/null | grep -Ei 'NSPPE.*(terminated|abort|crash)|pitboss.*NOT restarting NSPPE|PPE NSPPE missed too many heartbeats' | head -10 | while read -r L; do
-        [ -z "$L" ] && continue
-        log_hunt "[45] Packet Engine failure/restart indicator in $f: $L"
-    done
-done
-
-# [46] known current-campaign web artifacts
-for ROOT in /netscaler/ns_gui /var/netscaler /var/vpn /netscaler/portal; do
-    [ -d "$ROOT" ] || continue
-    find "$ROOT" -type f \( \
-        -iname '.ctxs.receiver' -o \
-        -iname 'receiver.min*.css' -o \
-        -iname 'insight-new.js' -o \
-        -iname 'nsginstaller*.deb' -o \
-        -iname 'nsgclient*.deb' -o \
-        -iname 'nsgclient*.sig' \
-    \) 2>/dev/null | while read -r F; do
-        [ -z "$F" ] && continue
-        log_ioc "[46] Known campaign artifact found: $F"
-    done
-done
-
-# [47] obvious local logging anomalies (local hunting only)
-for F in /var/log/httpaccess.log /var/log/httperror.log /var/log/ns.log; do
-    if [ ! -e "$F" ]; then
-        log_hunt "[47] Expected current log file is missing: $F"
-        continue
-    fi
-    SIZE=$(wc -c < "$F" 2>/dev/null | tr -d ' ')
-    [ -n "$SIZE" ] && [ "$SIZE" -eq 0 ] && log_hunt "[47] Expected current log file is empty: $F"
-done
-
-# [48] non-loopback sockets owned by interpreters/tunneling tools (local hunting only)
-if command -v sockstat >/dev/null 2>&1; then
-    sockstat -46 2>/dev/null | \
-    grep -Ei '(^|[[:space:]])(python|python[0-9.]*|perl|sh|bash|nc|ncat|netcat|socat)([[:space:]]|$)' | \
-    grep -Ev '127\.0\.0\.1[: ]|::1[: ]' | \
-    while read -r L; do
-        [ -z "$L" ] && continue
-        log_hunt "[48] Interpreter/tunneling process has non-loopback socket: $L"
-    done
-fi
-
-# [49] execution/persistence commands in shell and notice logs
-for f in /var/log/sh.log /var/log/sh.log.* /var/log/bash.log /var/log/bash.log.* /var/log/notice.log /var/log/notice.log.*; do
-    [ -f "$f" ] || continue
-    case "$f" in
-        *.gz) READER="zcat" ;;
-        *)    READER="cat" ;;
-    esac
-    $READER "$f" 2>/dev/null | grep -Ei \
-    'chmod[[:space:]]+u\+s[[:space:]]+/bin/sh|/bin/httpd[[:space:]]+-k[[:space:]]+restart|nsshutdown[[:space:]]+-R|(/etc/crontab|/nsconfig/rc\.netscaler).*(sed|perl|rm)|python.*base64.*exec' | \
-    while read -r L; do
-        [ -z "$L" ] && continue
-        log_ioc "[49] Suspicious persistence/execution command in $f: $L"
+        if echo "$L" | grep -Eqi '/bin/httpd[[:space:]]+-k[[:space:]]+restart|nsshutdown[[:space:]]+-R|(/etc/crontab|/nsconfig/rc\.netscaler).*(sed|perl|rm)'; then
+            log_hunt "[49] Persistence-related administrative command in $f: $L"
+        fi
     done
 done
 
