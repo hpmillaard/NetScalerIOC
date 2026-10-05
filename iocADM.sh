@@ -760,6 +760,8 @@ for f in /var/log/sh.log /var/log/sh.log.* /var/log/bash.log /var/log/bash.log.*
 done
 
 # [50] multi-signal web-shell behavior in small web-accessible files
+# Stock admin_ui PHP contains legitimate base64/socket/shell helper functions.
+# Require at least one campaign-specific marker before escalating to IOC.
 for ROOT in /netscaler/ns_gui /var/netscaler/logon /var/netscaler/gui /netscaler/portal /var/vpn; do
     [ -d "$ROOT" ] || continue
     find "$ROOT" -type f \( \
@@ -767,20 +769,37 @@ for ROOT in /netscaler/ns_gui /var/netscaler/logon /var/netscaler/gui /netscaler
         -iname '*.ico' -o -iname '*.js' -o -iname '*.xhtml' -o -iname '*.html' \
     \) 2>/dev/null | while read -r F; do
         [ -f "$F" ] || continue
+
+        case "$F" in
+            */admin_ui/*) continue ;;
+        esac
+
         SIZE=$(wc -c < "$F" 2>/dev/null | tr -d ' ')
         [ -z "$SIZE" ] && continue
         [ "$SIZE" -gt 262144 ] && continue
 
-        MATCHES=$(grep -Eio \
-        'HTTP_NSC_LDAP|HTTP_NSC_CLIENTTYPE|HTTP_X_UX(_[0-9]+)?|base64_decode[[:space:]]*\(|shell_exec[[:space:]]*\(|fsockopen[[:space:]]*\(|/tmp/\.uxd(port|lock)|http_response_code[[:space:]]*\([[:space:]]*404[[:space:]]*\)|chmod[[:space:]]+u\+s[[:space:]]+/bin/sh' \
+        STRONG=$(grep -Eio \
+        'HTTP_NSC_LDAP|HTTP_NSC_CLIENTTYPE|HTTP_X_UX(_[0-9]+)?|/tmp/\.uxd(port|lock)|chmod[[:space:]]+u\+s[[:space:]]+/bin/sh' \
         "$F" 2>/dev/null | sort -u | head -10)
 
-        COUNT=$(printf '%s\n' "$MATCHES" | grep -c . 2>/dev/null)
-        if [ -n "$COUNT" ] && [ "$COUNT" -ge 2 ]; then
-            log_ioc "[50] Multiple web-shell behavior markers in $F: $(printf '%s' "$MATCHES" | tr '\n' ' ')"
+        GENERIC=$(grep -Eio \
+        'base64_decode[[:space:]]*\(|shell_exec[[:space:]]*\(|fsockopen[[:space:]]*\(|http_response_code[[:space:]]*\([[:space:]]*404[[:space:]]*\)' \
+        "$F" 2>/dev/null | sort -u | head -10)
+
+        STRONG_COUNT=$(printf '%s\n' "$STRONG" | grep -c . 2>/dev/null)
+        GENERIC_COUNT=$(printf '%s\n' "$GENERIC" | grep -c . 2>/dev/null)
+
+        if [ -n "$STRONG_COUNT" ] && [ "$STRONG_COUNT" -ge 1 ]; then
+            log_ioc "[50] Campaign-specific web-shell marker in $F: $(printf '%s %s' "$STRONG" "$GENERIC" | tr '\n' ' ')"
+            continue
+        fi
+
+        if [ -n "$GENERIC_COUNT" ] && [ "$GENERIC_COUNT" -ge 2 ] && [ "$F" -nt "/var/nsinstall/adc.version" ]; then
+            log_hunt "[50] Recently modified web file contains multiple generic web-shell-capable functions: $F: $(printf '%s' "$GENERIC" | tr '\n' ' ')"
         fi
     done
 done
+
 
 trim_log "$LOGFILE"
 trim_log "$HUNT_LOGFILE"
