@@ -506,7 +506,8 @@ for f in /var/log/httpaccess.log /var/log/httpaccess.log.* /var/log/httperror.lo
     done
 done
 
-# [35] suspicious pitboss-related activity in NetScaler logs
+# [35] suspicious pitboss-related exploit attempts in NetScaler logs
+# Alert once per unique malicious payload/source instead of every AAAD/AAA log line.
 for f in /var/log/ns.log /var/log/ns.log.*; do
     [ -f "$f" ] || continue
 
@@ -518,13 +519,37 @@ for f in /var/log/ns.log /var/log/ns.log.*; do
     $READER "$f" 2>/dev/null | awk '
         {
             low=tolower($0)
-            if (low ~ /pitboss/ && (low ~ /ifs/ || (low ~ /aaatm/ && low ~ /ppe/))) {
-                print
+
+            if (low !~ /pitboss/ || low !~ /nsppe/) {
+                next
+            }
+
+            if (low ~ /bash\$\{ifs\}|\/dev\/tcp\//) {
+                type="reverse-shell"
+            } else if (low ~ /nohup\$\{ifs\}fetch|fetch\$\{ifs\}-qo-|\|sh/) {
+                type="fetch-pipe-shell"
+            } else {
+                next
+            }
+
+            ip=""
+            if (match($0, /Client_ip[[:space:]]+[0-9.]+/)) {
+                ip=substr($0, RSTART, RLENGTH)
+                sub(/^Client_ip[[:space:]]+/, "", ip)
+            }
+
+            key=type "|" ip
+            if (!seen[key]++) {
+                print type "|" ip "|" $0
             }
         }
-    ' | while read -r L; do
+    ' | while IFS='|' read -r TYPE SRC L; do
         [ -z "$L" ] && continue
-        log_ioc "[35] Suspicious pitboss-related log entry in $f: $L"
+        if [ -n "$SRC" ]; then
+            log_ioc "[35] Active exploit attempt detected ($TYPE) from $SRC in $f: $L"
+        else
+            log_ioc "[35] Active exploit attempt detected ($TYPE) in $f: $L"
+        fi
     done
 done
 
