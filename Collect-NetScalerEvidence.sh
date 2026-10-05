@@ -141,9 +141,9 @@ collect_evidence() {
     copy_file "/flash/nsconfig/httpd.conf" "$WORK/config"
     copy_file "/nsconfig/https.conf" "$WORK/config"
 
-    copy_file "/nsconfig/scripts/iocADM.sh" "$WORK/config"
-    copy_file "/nsconfig/scripts/iocADM.log" "$WORK/logs"
-    copy_file "/nsconfig/scripts/iocADM-hunt.log" "$WORK/logs"
+    copy_file "/nsconfig/scripts/ioc.sh" "$WORK/config"
+    copy_file "/nsconfig/scripts/ioc.log" "$WORK/logs"
+    copy_file "/nsconfig/scripts/ioc-hunt.log" "$WORK/logs"
 
     copy_dir "/var/log" "$WORK/logs/var-log"
     copy_dir "/var/nslog" "$WORK/logs/var-nslog"
