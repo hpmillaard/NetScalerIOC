@@ -50,17 +50,40 @@ if [ -n "$SPECIAL_CUTOFF_DATE" ]; then
     fi
 fi
 
+RUN_SEEN_IOC="/tmp/.iocADM-seen-ioc.$"
+RUN_SEEN_HUNT="/tmp/.iocADM-seen-hunt.$"
+: > "$RUN_SEEN_IOC"
+: > "$RUN_SEEN_HUNT"
+trap 'rm -f "$RUN_SEEN_IOC" "$RUN_SEEN_HUNT"' EXIT
+
+trim_log() {
+    FILE="$1"
+    [ -f "$FILE" ] || return 0
+    SIZE=$(wc -c < "$FILE" 2>/dev/null | tr -d ' ')
+    [ -z "$SIZE" ] && return 0
+    [ "$SIZE" -le 1048576 ] && return 0
+    tail -c 786432 "$FILE" > "$FILE.tmp.$" 2>/dev/null && mv "$FILE.tmp.$" "$FILE"
+}
+
 log_ioc() {
-    MSG="$1"
-    MSG="$(date '+%Y-%m-%d %H:%M:%S') - $MSG - Please forward to Harm Peter Millaard for further investigation!"
+    RAW="$1"
+    grep -Fqx "$RAW" "$RUN_SEEN_IOC" 2>/dev/null && return 0
+    echo "$RAW" >> "$RUN_SEEN_IOC"
+
+    MSG="$(date '+%Y-%m-%d %H:%M:%S') - $RAW - Please forward to Harm Peter Millaard for further investigation!"
     logger "$IOC - $MSG"
     echo "$MSG" >> "$LOGFILE"
+    trim_log "$LOGFILE"
 }
 
 # Lower-confidence hunting output. Never sent to logger/syslog.
 log_hunt() {
-    MSG="$1"
-    echo "$(date '+%Y-%m-%d %H:%M:%S') - [HUNT] $MSG" >> "$HUNT_LOGFILE"
+    RAW="$1"
+    grep -Fqx "$RAW" "$RUN_SEEN_HUNT" 2>/dev/null && return 0
+    echo "$RAW" >> "$RUN_SEEN_HUNT"
+
+    echo "$(date '+%Y-%m-%d %H:%M:%S') - [HUNT] $RAW" >> "$HUNT_LOGFILE"
+    trim_log "$HUNT_LOGFILE"
 }
 
 # ---- IOC TESTS 1–50 ----
@@ -709,6 +732,8 @@ if command -v sockstat >/dev/null 2>&1; then
 fi
 
 # [49] execution/persistence commands in shell and notice logs
+# Parse the logged shell_command itself and ignore scanner/search commands so
+# detection patterns do not recursively detect their own grep expressions.
 for f in /var/log/sh.log /var/log/sh.log.* /var/log/bash.log /var/log/bash.log.* /var/log/notice.log /var/log/notice.log.*; do
     [ -f "$f" ] || continue
     case "$f" in
@@ -716,18 +741,22 @@ for f in /var/log/sh.log /var/log/sh.log.* /var/log/bash.log /var/log/bash.log.*
         *)    READER="cat" ;;
     esac
 
-    # Never alert on this scanner's own shell-command logging or known NetScaler custom-SNMP maintenance.
-    $READER "$f" 2>/dev/null | \
-    grep -Ev 'iocADM|log_ioc|log_hunt|custom_snmpd\.py|customsnmpd|ctrap\.sh' | \
-    while read -r L; do
+    $READER "$f" 2>/dev/null | while read -r L; do
         [ -z "$L" ] && continue
 
-        if echo "$L" | grep -Eqi 'chmod[[:space:]]+u\+s[[:space:]]+/bin/sh|python.*base64.*exec'; then
+        CMD=$(printf '%s\n' "$L" | sed -n 's/.*shell_command="\(.*\)"[[:space:]]*$/\1/p')
+        [ -z "$CMD" ] && continue
+
+        # Scanner/query commands contain the IOC strings as data, not as executed payload.
+        echo "$CMD" | grep -Eqi '(^|[;&|[:space:]])(grep|egrep|fgrep|zgrep|awk|sed)[[:space:]]' && continue
+        echo "$CMD" | grep -Eqi 'iocADM|log_ioc|log_hunt|custom_snmpd\.py|customsnmpd|ctrap\.sh' && continue
+
+        if echo "$CMD" | grep -Eqi '(^|[;&|[:space:]])chmod[[:space:]]+u\+s[[:space:]]+/bin/sh([;&|[:space:]]|$)|(^|[;&|[:space:]])python[0-9.]*[[:space:]].*base64.*exec'; then
             log_ioc "[49] High-confidence persistence/execution command in $f: $L"
             continue
         fi
 
-        if echo "$L" | grep -Eqi '/bin/httpd[[:space:]]+-k[[:space:]]+restart|nsshutdown[[:space:]]+-R|(/etc/crontab|/nsconfig/rc\.netscaler).*(sed|perl|rm)'; then
+        if echo "$CMD" | grep -Eqi '(^|[;&|[:space:]])/bin/httpd[[:space:]]+-k[[:space:]]+restart([;&|[:space:]]|$)|(^|[;&|[:space:]])nsshutdown[[:space:]]+-R([;&|[:space:]]|$)|(/etc/crontab|/nsconfig/rc\.netscaler).*(sed|perl|rm)'; then
             log_hunt "[49] Persistence-related administrative command in $f: $L"
         fi
     done
