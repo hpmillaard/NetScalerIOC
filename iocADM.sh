@@ -73,7 +73,6 @@ log_ioc() {
     MSG="$(date '+%Y-%m-%d %H:%M:%S') - $RAW - Please forward to Harm Peter Millaard for further investigation!"
     logger "$IOC - $MSG"
     echo "$MSG" >> "$LOGFILE"
-    trim_log "$LOGFILE"
 }
 
 # Lower-confidence hunting output. Never sent to logger/syslog.
@@ -83,8 +82,10 @@ log_hunt() {
     echo "$RAW" >> "$RUN_SEEN_HUNT"
 
     echo "$(date '+%Y-%m-%d %H:%M:%S') - [HUNT] $RAW" >> "$HUNT_LOGFILE"
-    trim_log "$HUNT_LOGFILE"
 }
+
+trim_log "$LOGFILE"
+trim_log "$HUNT_LOGFILE"
 
 # ---- IOC TESTS 1–50 ----
 
@@ -732,8 +733,8 @@ if command -v sockstat >/dev/null 2>&1; then
 fi
 
 # [49] execution/persistence commands in shell and notice logs
-# Parse the logged shell_command itself and ignore scanner/search commands so
-# detection patterns do not recursively detect their own grep expressions.
+# Prefilter aggressively before parsing shell_command so large logs do not get
+# processed line-by-line with multiple subprocesses.
 for f in /var/log/sh.log /var/log/sh.log.* /var/log/bash.log /var/log/bash.log.* /var/log/notice.log /var/log/notice.log.*; do
     [ -f "$f" ] || continue
     case "$f" in
@@ -741,22 +742,18 @@ for f in /var/log/sh.log /var/log/sh.log.* /var/log/bash.log /var/log/bash.log.*
         *)    READER="cat" ;;
     esac
 
-    $READER "$f" 2>/dev/null | while read -r L; do
+    $READER "$f" 2>/dev/null |     grep 'shell_command="' |     grep -Ei 'chmod[[:space:]]+u\+s[[:space:]]+/bin/sh|python[0-9.]*[[:space:]].*base64.*exec|/bin/httpd[[:space:]]+-k[[:space:]]+restart|nsshutdown[[:space:]]+-R|/etc/crontab|/nsconfig/rc\.netscaler' |     grep -Ev 'iocADM|log_ioc|log_hunt|custom_snmpd\.py|customsnmpd|ctrap\.sh|shell_command="(echo|printf)[[:space:]].*grep|shell_command=".*(grep|egrep|fgrep|zgrep)[[:space:]]+-' |     while read -r L; do
         [ -z "$L" ] && continue
 
         CMD=$(printf '%s\n' "$L" | sed -n 's/.*shell_command="\(.*\)"[[:space:]]*$/\1/p')
         [ -z "$CMD" ] && continue
 
-        # Scanner/query commands contain the IOC strings as data, not as executed payload.
-        echo "$CMD" | grep -Eqi '(^|[;&|[:space:]])(grep|egrep|fgrep|zgrep|awk|sed)[[:space:]]' && continue
-        echo "$CMD" | grep -Eqi 'iocADM|log_ioc|log_hunt|custom_snmpd\.py|customsnmpd|ctrap\.sh' && continue
-
-        if echo "$CMD" | grep -Eqi '(^|[;&|[:space:]])chmod[[:space:]]+u\+s[[:space:]]+/bin/sh([;&|[:space:]]|$)|(^|[;&|[:space:]])python[0-9.]*[[:space:]].*base64.*exec'; then
+        if printf '%s\n' "$CMD" | grep -Eqi '(^|[;&|[:space:]])chmod[[:space:]]+u\+s[[:space:]]+/bin/sh([;&|[:space:]]|$)|(^|[;&|[:space:]])python[0-9.]*[[:space:]].*base64.*exec'; then
             log_ioc "[49] High-confidence persistence/execution command in $f: $L"
             continue
         fi
 
-        if echo "$CMD" | grep -Eqi '(^|[;&|[:space:]])/bin/httpd[[:space:]]+-k[[:space:]]+restart([;&|[:space:]]|$)|(^|[;&|[:space:]])nsshutdown[[:space:]]+-R([;&|[:space:]]|$)|(/etc/crontab|/nsconfig/rc\.netscaler).*(sed|perl|rm)'; then
+        if printf '%s\n' "$CMD" | grep -Eqi '(^|[;&|[:space:]])/bin/httpd[[:space:]]+-k[[:space:]]+restart([;&|[:space:]]|$)|(^|[;&|[:space:]])nsshutdown[[:space:]]+-R([;&|[:space:]]|$)|(/etc/crontab|/nsconfig/rc\.netscaler).*(sed|perl|rm)'; then
             log_hunt "[49] Persistence-related administrative command in $f: $L"
         fi
     done
@@ -785,4 +782,6 @@ for ROOT in /netscaler/ns_gui /var/netscaler/logon /var/netscaler/gui /netscaler
     done
 done
 
+trim_log "$LOGFILE"
+trim_log "$HUNT_LOGFILE"
 exit 0
