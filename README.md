@@ -4,14 +4,14 @@ A small incident-response toolkit for **Citrix NetScaler ADC / NetScaler Gateway
 
 The repository currently contains two shell scripts:
 
-- **`iocADM.sh`** — a reusable IOC scanner with 50 checks for suspicious files, processes, log entries, persistence mechanisms and runtime behavior.
+- **`ioc.sh`** — a reusable IOC scanner with 50 checks for suspicious files, processes, log entries, persistence mechanisms and runtime behavior.
 - **`Collect-NetScalerEvidence.sh`** — an interactive evidence collector that preserves volatile state, logs, configuration and existing crash artifacts, and can optionally generate an NSPPE core dump.
 
 The scripts are intended for administrators who already understand NetScaler HA, shell access and the operational impact of restarting a Packet Engine. They are not a substitute for vendor support or a full forensic investigation.
 
 ## IOC scanner
 
-`iocADM.sh` is designed to run manually or as a scheduled task from NetScaler Console.
+`ioc.sh` is designed to run manually or as a scheduled task from NetScaler Console.
 
 It has no command-line parameters.
 
@@ -42,7 +42,7 @@ SPECIAL_CUTOFF_DATE=""
 Findings are written to:
 
 ```text
-/nsconfig/scripts/iocADM.log
+/nsconfig/scripts/ioc.log
 ```
 
 IOC findings are also sent through `logger` with an `[IOC]` tag, making them suitable for forwarding through the appliance logging pipeline.
@@ -50,7 +50,7 @@ IOC findings are also sent through `logger` with an `[IOC]` tag, making them sui
 Lower-confidence hunting results are written separately to:
 
 ```text
-/nsconfig/scripts/iocADM-hunt.log
+/nsconfig/scripts/ioc-hunt.log
 ```
 
 The hunt log is **never** sent through `logger` or syslog. This allows broad behavioral hunting without automatically creating SIEM/ServiceNow incidents for low-confidence signals.
