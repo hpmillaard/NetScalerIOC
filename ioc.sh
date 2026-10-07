@@ -228,19 +228,24 @@ done
 ps auxww 2>/dev/null | grep perl | grep -v grep | while read -r L; do
     [ -z "$L" ] && continue
     echo "$L" | grep -qE "/usr/bin/perl +/netscaler/auto_update_signatures( |$)" && continue
+    echo "$L" | grep -qE "/usr/bin/perl +-w +/netscaler/monitors/nssf\.pl( |$)" && continue
     log_hunt "[15] Perl process: $L"
 done
 
-# [16] suspicious commands in logs
-grep -v '127\.0\.0\.1' /var/log/*.log 2>/dev/null | \
-grep -E 'nc -l|/etc/passwd|python -c|\.php' | \
-grep -v 'iprep_curl_download' | \
-grep -v 'shell_command' | \
-grep -Ev '/nsconfig/scripts/(ioc|iocADM)\.sh' | \
-grep -v '\[IOC\]' | \
-while read -r L; do
-    [ -z "$L" ] && continue
-    log_ioc "[16] Suspicious command in log: $L"
+# [16] suspicious shell/admin command traces in logs
+# Do not treat arbitrary HTTP request paths ending in .php as a NetScaler IOC.
+for f in /var/log/sh.log /var/log/bash.log /var/log/notice.log; do
+    [ -f "$f" ] || continue
+    grep -v '127\.0\.0\.1' "$f" 2>/dev/null | \
+    grep -Ei '(^|[;&|[:space:]])nc[[:space:]].*-l|/etc/passwd|python[0-9.]*[[:space:]]+-c|(^|[;&|[:space:]])(curl|fetch|wget)[[:space:]].*https?://.*\|[[:space:]]*(sh|bash)|/dev/tcp/' | \
+    grep -v 'iprep_curl_download' | \
+    grep -v 'shell_command' | \
+    grep -Ev '/nsconfig/scripts/(ioc|iocADM)\.sh' | \
+    grep -v '\[IOC\]' | \
+    while read -r L; do
+        [ -z "$L" ] && continue
+        log_ioc "[16] Suspicious shell/admin trace in $f: $L"
+    done
 done
 
 # [17] setuid root files in /var since cutoff
