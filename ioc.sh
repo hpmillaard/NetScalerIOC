@@ -228,7 +228,7 @@ done
 ps auxww 2>/dev/null | grep perl | grep -v grep | while read -r L; do
     [ -z "$L" ] && continue
     echo "$L" | grep -qE "/usr/bin/perl +/netscaler/auto_update_signatures( |$)" && continue
-    echo "$L" | grep -qE "/usr/bin/perl +-w +/netscaler/monitors/nssf\.pl( |$)" && continue
+    echo "$L" | grep -qE "/usr/bin/perl +-w +/netscaler/monitors/(nssf|nsldap|nssmtp)\.pl( |$)" && continue
     log_hunt "[15] Perl process: $L"
 done
 
