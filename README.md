@@ -100,6 +100,9 @@ The scanner currently checks for, among other things:
 - suspicious non-loopback sockets owned by interpreters/tunneling tools
 - suspicious restart/SUID/crontab manipulation commands
 - multi-signal web-shell behavior inside small web-accessible files
+- CTX697096 retrospective log hunting (including available pre-upgrade history), Enhanced ISN configuration and local log-coverage reporting, all **hunt-only**
+
+Generic Base64 payload indicators from HTTP logs are hunt-only rather than syslog/ServiceNow alerts. Only higher-confidence detections use `ioc.log` and `logger`. Historical checks are limited to logs still retained locally; missing history cannot be reconstructed.
 
 A clean scan means **no indicators were found by these checks**. It does not prove that compromise never occurred.
 
