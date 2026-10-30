@@ -676,7 +676,7 @@ for f in /var/log/httpaccess.log /var/log/httpaccess.log.*; do
     'INDEX:[A-Za-z0-9+/]{20,}={0,2}|User-Agent:.*[A-Za-z0-9+/]{40,}={0,2}' | \
     while read -r L; do
         [ -z "$L" ] && continue
-        log_ioc "[41] Base64 payload pattern in HTTP log $f: $L"
+        log_hunt "[41] Base64 payload pattern in HTTP log $f: $L"
     done
 done
 
@@ -861,3 +861,34 @@ done
 trim_log "$LOGFILE"
 trim_log "$HUNT_LOGFILE"
 exit 0
+
+# [51] CTX697096 retrospective indicators (hunt only, never syslog).
+# Scan all locally retained logs, including those predating firmware upgrades.
+# A log entry alone is not proof of successful exploitation.
+for f in /var/log/ns.log /var/log/ns.log.* /var/log/httpaccess.log /var/log/httpaccess.log.* /var/log/httperror.log /var/log/httperror.log.*; do
+    [ -f "$f" ] || continue
+    case "$f" in
+        *.gz) READER="zcat" ;;
+        *) READER="cat" ;;
+    esac
+    $READER "$f" 2>/dev/null | grep -Ei 'PPE NSPPE missed too many heartbeats|ns_monupload_err|INDEX:[A-Za-z0-9+/]{20,}={0,2}|User-Agent:.*[A-Za-z0-9+/]{40,}={0,2}' | head -50 | while read -r L; do
+        [ -z "$L" ] && continue
+        log_hunt "[51] CTX697096 historical indicator in $f: $L"
+    done
+done
+
+# [52] CVE-2026-88778 configuration exposure (not an IOC).
+if command -v nscli >/dev/null 2>&1; then
+    ISN_STATUS=$(nscli -c 'show ns tcpparam' 2>/dev/null | grep -i 'Enhanced ISN Generation' | head -1)
+    echo "$ISN_STATUS" | grep -qi 'DISABLED' && log_hunt "[52] CVE-2026-88778: $ISN_STATUS (enable enhanced ISN generation)"
+fi
+
+# [53] Retained local log coverage: warn when history cannot support a retrospective assessment.
+for f in /var/log/ns.log /var/log/httpaccess.log /var/log/httperror.log; do
+    [ -f "$f" ] || continue
+    FIRST=$(ls -1t "$f"* 2>/dev/null | tail -1)
+    [ -z "$FIRST" ] && continue
+    OLDEST=$(date -r "$FIRST" '+%Y-%m-%d %H:%M:%S' 2>/dev/null)
+    [ -z "$OLDEST" ] && continue
+    log_hunt "[53] Available local log coverage for $f: oldest retained file timestamp $OLDEST (file timestamp, not verified first event)"
+done
