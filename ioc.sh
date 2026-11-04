@@ -858,10 +858,6 @@ for ROOT in /netscaler/ns_gui /var/netscaler/logon /var/netscaler/gui /netscaler
 done
 
 
-trim_log "$LOGFILE"
-trim_log "$HUNT_LOGFILE"
-exit 0
-
 # [51] CTX697096 retrospective indicators (hunt only, never syslog).
 # Scan all locally retained logs, including those predating firmware upgrades.
 # A log entry alone is not proof of successful exploitation.
@@ -892,3 +888,7 @@ for f in /var/log/ns.log /var/log/httpaccess.log /var/log/httperror.log; do
     [ -z "$OLDEST" ] && continue
     log_hunt "[53] Available local log coverage for $f: oldest retained file timestamp $OLDEST (file timestamp, not verified first event)"
 done
+
+trim_log "$LOGFILE"
+trim_log "$HUNT_LOGFILE"
+exit 0
