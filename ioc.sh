@@ -889,6 +889,78 @@ for f in /var/log/ns.log /var/log/httpaccess.log /var/log/httperror.log; do
     log_hunt "[53] Available local log coverage for $f: oldest retained file timestamp $OLDEST (file timestamp, not verified first event)"
 done
 
+
+# [54] Targeted incident: attempted command injection in AAA logs.
+# These entries demonstrate ATTEMPTS, not successful command execution.
+for f in /var/log/ns.log /var/log/ns.log.*; do
+    [ -f "$f" ] || continue
+    case "$f" in
+        *.gz) READER="zcat" ;;
+        *) READER="cat" ;;
+    esac
+    $READER "$f" 2>/dev/null | awk '
+        /PPEunexpectedly diedNSPPE|v5v[.]in|167[.]88[.]173[.]157/ {
+            count++
+            if (first == "") first=$0
+            last=$0
+            if (shown++ < 5) print "sample: " $0
+        }
+        END {
+            if (count) {
+                print "total matching log entries: " count
+                print "first: " first
+                print "last: " last
+            }
+        }
+    ' | while IFS= read -r L; do
+        [ -n "$L" ] && log_hunt "[54] Attempt evidence in $f: $L"
+    done
+done
+
+# [55] Incident-specific dropped artifacts and unexpected SUID shell.
+for F in /nsconfig/.slap /nsconfig/.relay /flash/.nsvm \
+    /var/netscaler/logon/LogonPoint/a /tmp/.uxdport /tmp/.uxdlock; do
+    [ -e "$F" ] || continue
+    log_ioc "[55] Incident artifact present: $(ls -ldT "$F" 2>/dev/null)"
+done
+for F in /bin/sh /var/tmp/sh; do
+    [ -f "$F" ] && [ -u "$F" ] && log_ioc "[55] SUID shell: $(ls -lT "$F" 2>/dev/null)"
+done
+
+# [56] Unexpected recent executable web content (exclude stock admin_ui).
+for ROOT in /var/netscaler/logon /netscaler/portal /var/vpn /netscaler/ns_gui; do
+    [ -d "$ROOT" ] || continue
+    find "$ROOT" -type f -newermt "$CUTOFF_DATE" \
+        \( -iname '*.php' -o -iname '*.phtml' -o -iname '*.cgi' -o -iname '*.sh' \) \
+        ! -path '*/admin_ui/*' 2>/dev/null | while IFS= read -r F; do
+        [ -n "$F" ] && log_hunt "[56] Recent executable web file: $(ls -lT "$F" 2>/dev/null)"
+    done
+done
+
+# [57] Evidence of actual shell execution is separate from submitted AAA payloads.
+for f in /var/log/sh.log /var/log/sh.log.* /var/log/bash.log /var/log/bash.log.*; do
+    [ -f "$f" ] || continue
+    case "$f" in
+        *.gz) READER="zcat" ;;
+        *) READER="cat" ;;
+    esac
+    $READER "$f" 2>/dev/null | grep -Ei 'v5v[.]in|/LogonPoint/a|/nsconfig/[.]slap|/nsconfig/[.]relay' |
+    grep -vE 'grep|ioc[.]sh|log_ioc|log_hunt' | head -20 | while IFS= read -r L; do
+        [ -n "$L" ] && log_ioc "[57] Possible command execution trace in $f: $L"
+    done
+done
+
+# [58] Authentication roles: IdP absence does not mean SAML SP is absent.
+if command -v nscli >/dev/null 2>&1; then
+    IDP=$(nscli -c 'show authentication samlIdPProfile' 2>&1)
+    SP=$(nscli -c 'show authentication samlAction' 2>&1)
+    log_hunt "[58] SAML IdP profiles: $(printf '%s\n' "$IDP" | grep -c 'Name:')"
+    log_hunt "[58] SAML SP actions: $(printf '%s\n' "$SP" | grep -c 'Name:')"
+    if printf '%s\n' "$IDP$SP" | grep -qiE 'ERROR|not authorized|not permitted'; then
+        log_hunt "[58] SAML query returned an error: verify CLI permissions"
+    fi
+fi
+
 trim_log "$LOGFILE"
 trim_log "$HUNT_LOGFILE"
 exit 0
